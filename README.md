@@ -1,2 +1,2 @@
 # modal-catuskoti-lean
-A Github repository containing the Lean 4 formalization of the paper: "The Modal Catuṣkoṭi: Formalizing Emptiness in Classical Modal Logic."
+A Github repository containing the Lean 4 formalization of the paper: "The Modal Catuṣkoṭi: Formalizing Emptiness in Classical Modal Logic," generated and verified using Aristotle (Harmonic). Aristotle is an AI theorem-proving tool that generates formal proofs that are verified in Lean 4, a proof assistant whose kernel mechanically checks each logical step. All proofs are machine-checked with no unproven assumptions.
