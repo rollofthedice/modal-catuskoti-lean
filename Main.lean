@@ -1,15 +1,37 @@
 /-
-Combined Modal Logic: Catuṣkoṭi Operator T
+Combined Modal Logic: Catuṣkoṭi Operator T  (four-valued atomic version)
 
-This file unifies three formalizations into a single proof of:
-1. T(P) satisfiability in K, T, S4, and S5.
-2. T(T(P)) satisfiability in K, T, and S4.
-3. T(T(P)) unsatisfiability in S5.
-4. For all n, Tⁿ(P) satisfiability in K, T, and S4.
+This file formalizes a *two-tier* semantics for a modal language with a
+four-valued `val` constructor:
 
-Key techniques:
-- Combined (disjoint union) model construction for satisfiability.
-- Class-constancy argument for S5 unsatisfiability.
+  * ATOMIC TIER (genuinely four-valued):
+      Each atom `p` receives, at each world, one of the four values
+      `t, f, b, n` via `V : ℕ → World → Val4`.
+      Consequently `val (atom p) x` is forced exactly when `V p w = x`, so
+      `val (atom p) b` and `val (atom p) n` are genuinely satisfiable.
+
+  * HIGHER (COMPLEX) TIER (bivalent):
+      For a *non-atomic* formula `φ`, the paper's bivalent clauses apply:
+          val φ t  ↔  forces φ
+          val φ f  ↔  ¬ forces φ
+          val φ b  ↔  False
+          val φ n  ↔  False
+      i.e. complex formulas only ever receive value `t` or `f`.
+
+The *satisfaction* relation `forces` is itself bivalent (Prop-valued); the
+four-valuedness lives entirely in the atomic valuation `V` and surfaces only
+through `val (atom p) x`.
+
+Main results:
+  * A. Atomic semantic correctness + genuine `b`/`n` witnesses + non-atomic
+       unsatisfiability of `b`/`n`.
+  * B. `T(atom 0)` satisfiable in K, T, S4, S5.
+  * C. `T(T(P))` and `Tⁿ(P)` satisfiable in K, T, S4 (with a separate atomic
+       base case, as explained below).
+  * D. `T(T(P))` unsatisfiable in S5 (class-constancy of boxed formulas).
+  * E. Higher-level reduction: for complex `φ`, the `b`/`n` conjuncts of `T(φ)`
+       are automatic under seriality, so `T(T(P))` reduces to classical modal
+       contingency `¬□T(P) ∧ ¬□¬T(P)`.
 -/
 
 import Mathlib
@@ -18,7 +40,7 @@ set_option linter.mathlibStandardSet false
 
 open scoped Classical
 
-set_option maxHeartbeats 800000
+set_option maxHeartbeats 1600000
 set_option maxRecDepth 4000
 
 set_option relaxedAutoImplicit false
@@ -28,17 +50,14 @@ noncomputable section
 
 /-! ## Definitions -/
 
-/-- Four-valued truth type used in the `val` constructor. -/
+/-- Four-valued truth type used in the `val` constructor:
+    `t` (true), `f` (false), `b` (both), `n` (neither). -/
 inductive Val4
   | t | f | b | n
   deriving DecidableEq, Repr
 
-/-- Modal logic formulas with atoms, negation, conjunction, box, and val.
-    The `val` constructor allows asserting the truth status of complex formulas:
-    - `val φ t` holds iff φ holds
-    - `val φ f` holds iff φ does not hold
-    - `val φ b` never holds (paraconsistent case — excluded)
-    - `val φ n` never holds (gap case — excluded) -/
+/-- Modal formulas: atoms, negation, conjunction, box, and the four-valued
+    `val` constructor `val φ x` ("φ has truth value `x`"). -/
 inductive Formula where
   | atom : ℕ → Formula
   | not : Formula → Formula
@@ -46,23 +65,50 @@ inductive Formula where
   | box : Formula → Formula
   | val : Formula → Val4 → Formula
 
-/-- A Kripke model with a type of worlds, an accessibility relation, and a
-    propositional valuation function. -/
+/-- A Kripke model: worlds, an accessibility relation, and a **four-valued**
+    atomic valuation `V : ℕ → World → Val4`.  (This is the key correction over
+    the earlier Boolean `V : ℕ → World → Prop`, which made `b`/`n` impossible
+    even for atoms.) -/
 structure KripkeModel where
   World : Type
   R : World → World → Prop
-  V : ℕ → World → Prop
+  V : ℕ → World → Val4
 
-/-- Satisfaction (forcing) relation for formulas in a Kripke model. -/
+/-- Bivalent interpretation of a `val` on a **complex** formula: the truth of
+    `φ` is a `Prop` `p`, and `val φ x` is read as
+    `t ↦ p`, `f ↦ ¬p`, `b ↦ False`, `n ↦ False`. -/
+def valComplex (p : Prop) : Val4 → Prop
+  | .t => p
+  | .f => ¬ p
+  | .b => False
+  | .n => False
+
+/-- Satisfaction (forcing).  It is **bivalent** (Prop-valued).
+
+    * Bare atoms are forced exactly when their four-valued value is `t`
+      (`forces (atom p) ↔ V p w = t`).
+    * `val (atom p) x` is the genuine four-valued atomic clause
+      (`forces (val (atom p) x) ↔ V p w = x`).
+    * `val φ x` for **non-atomic** `φ` uses the bivalent `valComplex` clauses.
+      (The recursive `.val` cases below range over all *non-atom* head shapes.) -/
 def forces (M : KripkeModel) : M.World → Formula → Prop
-  | w, .atom p    => M.V p w
+  | w, .atom p    => M.V p w = .t
   | w, .not φ     => ¬ forces M w φ
   | w, .and φ ψ   => forces M w φ ∧ forces M w ψ
   | w, .box φ     => ∀ w', M.R w w' → forces M w' φ
-  | w, .val φ .t  => forces M w φ
-  | w, .val φ .f  => ¬ forces M w φ
-  | _, .val _ .b  => False
-  | _, .val _ .n  => False
+  | w, .val (.atom p) x  => M.V p w = x
+  | w, .val (.not φ) x    => valComplex (forces M w (.not φ)) x
+  | w, .val (.and φ ψ) x  => valComplex (forces M w (.and φ ψ)) x
+  | w, .val (.box φ) x    => valComplex (forces M w (.box φ)) x
+  | w, .val (.val φ y) x  => valComplex (forces M w (.val φ y)) x
+
+/-- Syntactic predicate: `φ` is an atomic proposition. -/
+def IsAtomF : Formula → Prop
+  | .atom _ => True
+  | _ => False
+
+/-- Syntactic predicate: `φ` is *complex* (non-atomic). -/
+def IsComplexF (φ : Formula) : Prop := ¬ IsAtomF φ
 
 /-! ## Frame Conditions -/
 
@@ -78,10 +124,7 @@ def IsS5 (M : KripkeModel) : Prop :=
 
 /-! ## The Catuṣkoṭi Operator T
 
-T(P) = ¬□(val P t) ∧ ¬□(val P f) ∧ ¬□(val P b) ∧ ¬□(val P n)
-
-This asserts that across accessible worlds, P has no single definite truth status:
-not necessarily true, not necessarily false, not necessarily both, not necessarily neither. -/
+`T(P) = ¬□(val P t) ∧ ¬□(val P f) ∧ ¬□(val P b) ∧ ¬□(val P n)`. -/
 
 def target_formula (P : Formula) : Formula :=
   .and
@@ -92,71 +135,153 @@ def target_formula (P : Formula) : Formula :=
       (.not (.box (.val P .b)))
       (.not (.box (.val P .n))))
 
-/-- n-fold iteration: T⁰(P) = atom 0, Tⁿ⁺¹(P) = T(Tⁿ(P)). -/
+/-- n-fold iteration: `T⁰(P) = atom 0`, `Tⁿ⁺¹(P) = T(Tⁿ(P))`. -/
 def T_iter : ℕ → Formula
   | 0 => .atom 0
   | (n + 1) => target_formula (T_iter n)
 
-/-! ## Part 1: T(P) Satisfiability in K, T, S4, S5
+/-! ## Basic semantic lemmas (two-tier structure) -/
 
-A two-world model with universal accessibility suffices for all logics.
-At one world P holds, at the other it fails.
-This model is an S5 frame (reflexive, symmetric, transitive). -/
+/-- Congruence for `valComplex` in its propositional argument. -/
+lemma valComplex_congr {p q : Prop} (h : p ↔ q) (x : Val4) :
+    valComplex p x ↔ valComplex q x := by
+  cases x <;> simp [valComplex, h]
 
-/-- Two-world model: P holds at `true`, fails at `false`, with universal access. -/
+/-- **A (atomic correctness).** `val (atom p) x` is genuinely four-valued:
+    it is forced exactly when the atom's four-valued value equals `x`. -/
+@[simp] lemma forces_val_atom (M : KripkeModel) (w : M.World) (p : ℕ) (x : Val4) :
+    forces M w (.val (.atom p) x) ↔ M.V p w = x := Iff.rfl
+
+/-- Bare atoms are forced exactly when their value is `t`. -/
+lemma forces_atom (M : KripkeModel) (w : M.World) (p : ℕ) :
+    forces M w (.atom p) ↔ M.V p w = .t := Iff.rfl
+
+/-- For a complex `φ`, `val φ x` collapses to the bivalent `valComplex` clause. -/
+lemma forces_val_of_complex (M : KripkeModel) (w : M.World) (φ : Formula) (x : Val4)
+    (hφ : IsComplexF φ) :
+    forces M w (.val φ x) = valComplex (forces M w φ) x := by
+  cases φ with
+  | atom p => exact absurd trivial hφ
+  | not ψ => rfl
+  | and ψ χ => rfl
+  | box ψ => rfl
+  | val ψ y => rfl
+
+/-- Bivalent clause: `val φ t ↔ forces φ` for complex `φ`. -/
+lemma forces_val_t_complex (M : KripkeModel) (w : M.World) (φ : Formula)
+    (hφ : IsComplexF φ) : forces M w (.val φ .t) ↔ forces M w φ := by
+  cases φ with
+  | atom p => exact absurd trivial hφ
+  | _ => exact Iff.rfl
+
+/-- Bivalent clause: `val φ f ↔ ¬ forces φ` for complex `φ`. -/
+lemma forces_val_f_complex (M : KripkeModel) (w : M.World) (φ : Formula)
+    (hφ : IsComplexF φ) : forces M w (.val φ .f) ↔ ¬ forces M w φ := by
+  cases φ with
+  | atom p => exact absurd trivial hφ
+  | _ => exact Iff.rfl
+
+/-- Bivalent clause: `val φ b ↔ False` for complex `φ`. -/
+lemma forces_val_b_complex (M : KripkeModel) (w : M.World) (φ : Formula)
+    (hφ : IsComplexF φ) : forces M w (.val φ .b) ↔ False := by
+  cases φ with
+  | atom p => exact absurd trivial hφ
+  | _ => exact Iff.rfl
+
+/-- Bivalent clause: `val φ n ↔ False` for complex `φ`. -/
+lemma forces_val_n_complex (M : KripkeModel) (w : M.World) (φ : Formula)
+    (hφ : IsComplexF φ) : forces M w (.val φ .n) ↔ False := by
+  cases φ with
+  | atom p => exact absurd trivial hφ
+  | _ => exact Iff.rfl
+
+/-- `target_formula P` is always complex (it is a conjunction). -/
+lemma target_formula_complex (P : Formula) : IsComplexF (target_formula P) := by
+  intro h; exact h
+
+/-- `Tⁿ⁺¹(P)` is always complex. -/
+lemma T_iter_succ_complex (n : ℕ) : IsComplexF (T_iter (n + 1)) :=
+  target_formula_complex (T_iter n)
+
+/-! ## Part A: Atomic four-valuedness — witnesses and non-atomic bans -/
+
+/-- One-world model whose atom `0` carries the value `v`. -/
+def atomVal_model (v : Val4) : KripkeModel where
+  World := Unit
+  R _ _ := True
+  V _ _ := v
+
+/-- **A.** An atom can genuinely have value `b`. -/
+theorem atom_val_b_sat :
+    ∃ (M : KripkeModel) (w : M.World), forces M w (.val (.atom 0) .b) :=
+  ⟨atomVal_model .b, (), rfl⟩
+
+/-- **A.** An atom can genuinely have value `n`. -/
+theorem atom_val_n_sat :
+    ∃ (M : KripkeModel) (w : M.World), forces M w (.val (.atom 0) .n) :=
+  ⟨atomVal_model .n, (), rfl⟩
+
+/-- **A.** For any complex `φ`, `val φ b` is unsatisfiable. -/
+theorem val_complex_b_unsat (M : KripkeModel) (w : M.World) (φ : Formula)
+    (hφ : IsComplexF φ) : ¬ forces M w (.val φ .b) := by
+  rw [forces_val_b_complex M w φ hφ]; exact id
+
+/-- **A.** For any complex `φ`, `val φ n` is unsatisfiable. -/
+theorem val_complex_n_unsat (M : KripkeModel) (w : M.World) (φ : Formula)
+    (hφ : IsComplexF φ) : ¬ forces M w (.val φ .n) := by
+  rw [forces_val_n_complex M w φ hφ]; exact id
+
+/-! ## Part B: T(atom 0) satisfiability in K, T, S4, S5
+
+Two worlds, universal accessibility, atom `0` valued `t` at one and `f` at the
+other.  Every value is *missing* from some accessible world, so none of the four
+necessity claims holds — including `b` and `n`, which fail because neither value
+is assigned uniformly across all accessible worlds. -/
+
+/-- Two-world S5 model: atom `0` is `t` at `true`, `f` at `false`. -/
 def TP_model : KripkeModel where
   World := Bool
   R _ _ := True
-  V _p w := w = true
+  V _p w := cond w Val4.t Val4.f
 
-theorem TP_model_isS5 : IsS5 TP_model := by
-  exact ⟨ by tauto, by tauto, by tauto ⟩
+theorem TP_model_isS5 : IsS5 TP_model :=
+  ⟨fun _ => trivial, fun _ _ _ => trivial, fun _ _ _ _ _ => trivial⟩
 
 theorem TP_satisfiable :
     forces TP_model true (target_formula (.atom 0)) := by
-      constructor;
-      · constructor;
-        · exact fun h => by have := h false trivial; contradiction;
-        · rintro w';
-          exact absurd ( w' true ( by trivial ) ) ( by tauto );
-      · constructor;
-        · exact fun h => by cases h true trivial;
-        · exact fun h => by cases h true trivial;
+  refine ⟨⟨?_, ?_⟩, ⟨?_, ?_⟩⟩
+  · intro h; have := h false trivial; simp [forces, TP_model] at this
+  · intro h; have := h true trivial; simp [forces, TP_model] at this
+  · intro h; have := h true trivial; simp [forces, TP_model] at this
+  · intro h; have := h true trivial; simp [forces, TP_model] at this
 
-/-- T(P) is satisfiable in K. -/
+/-- **B.** T(P) is satisfiable in K. -/
 theorem TP_satisfiable_K :
     ∃ (M : KripkeModel) (w : M.World), forces M w (target_formula (.atom 0)) :=
   ⟨TP_model, true, TP_satisfiable⟩
 
-/-- T(P) is satisfiable in T (reflexive frames). -/
+/-- **B.** T(P) is satisfiable in T (reflexive frames). -/
 theorem TP_satisfiable_T :
     ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ forces M w (target_formula (.atom 0)) :=
   ⟨TP_model, true, TP_model_isS5.1, TP_satisfiable⟩
 
-/-- T(P) is satisfiable in S4 (reflexive + transitive frames). -/
+/-- **B.** T(P) is satisfiable in S4 (reflexive + transitive frames). -/
 theorem TP_satisfiable_S4 :
     ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ IsTransitive M ∧ forces M w (target_formula (.atom 0)) :=
   ⟨TP_model, true, TP_model_isS5.1, TP_model_isS5.2.2, TP_satisfiable⟩
 
-/-- T(P) is satisfiable in S5 (equivalence relation frames). -/
+/-- **B.** T(P) is satisfiable in S5. -/
 theorem TP_satisfiable_S5 :
     ∃ (M : KripkeModel) (w : M.World),
       IsS5 M ∧ forces M w (target_formula (.atom 0)) :=
   ⟨TP_model, true, TP_model_isS5, TP_satisfiable⟩
 
-/-! ## Part 2: Combined Model Construction
+/-! ## Part 2: Combined (disjoint-union) model construction -/
 
-Given two Kripke models M₁ and M₂ with distinguished worlds w₁ and w₂,
-we form a disjoint union with a fresh root that sees all worlds in both
-components (and itself). Within each component, accessibility is inherited.
-
-The root seeing all worlds (rather than just entry points) ensures the
-combined model preserves transitivity when both components are transitive. -/
-
-/-- Combined model: two Kripke models joined at a fresh root.
-    Root sees itself and all component worlds. Components are isolated from each other. -/
+/-- Combined model: two Kripke models joined at a fresh root `none`.  The root
+    sees itself and all component worlds; components are isolated. -/
 def combined_model (M₁ M₂ : KripkeModel) (_w₁ : M₁.World) (_w₂ : M₂.World) :
     KripkeModel where
   World := Option (M₁.World ⊕ M₂.World)
@@ -167,7 +292,7 @@ def combined_model (M₁ M₂ : KripkeModel) (_w₁ : M₁.World) (_w₂ : M₂.
     | some (.inr a), some (.inr b) => M₂.R a b
     | _, _                     => False
   V p w := match w with
-    | none           => True
+    | none           => Val4.t
     | some (.inl a)  => M₁.V p a
     | some (.inr b)  => M₂.V p b
 
@@ -177,14 +302,24 @@ Satisfaction is preserved when embedding into the left component.
 theorem forces_combined_left (M₁ M₂ : KripkeModel) (w₁ : M₁.World) (w₂ : M₂.World)
     (φ : Formula) (a : M₁.World) :
     forces (combined_model M₁ M₂ w₁ w₂) (some (.inl a)) φ ↔ forces M₁ a φ := by
-      induction' φ with _ _ _ _ _ _ _ _ _ ih generalizing a <;> try tauto;
-      · unfold forces; aesop;
-      · exact and_congr ( by solve_by_elim ) ( by solve_by_elim );
-      · simp +decide [ *, forces ];
-        constructor <;> intro h w' hw';
-        · exact ‹∀ a : M₁.World, forces ( combined_model M₁ M₂ w₁ w₂ ) ( some ( Sum.inl a ) ) _ ↔ forces M₁ a _› w' |>.1 ( h _ <| by tauto );
-        · rcases w' with ( _ | _ | w' ) <;> simp_all +decide [ combined_model ];
-      · cases ‹Val4› <;> simp_all +decide [ forces ]
+  induction' φ with p ih generalizing a;
+  · aesop;
+  · simp_all +decide [ forces ];
+  · simp_all +decide [ forces ];
+  · simp +decide [ forces, combined_model ];
+    constructor;
+    · intro h w' hw';
+      exact ‹∀ a : M₁.World, forces ( combined_model M₁ M₂ w₁ w₂ ) ( some ( Sum.inl a ) ) _ ↔ forces M₁ a _› w' |>.1 ( h _ hw' );
+    · intro h w' hw';
+      rcases w' with ( _ | ( w' | w' ) ) <;> simp +decide at hw' ⊢;
+      exact ‹∀ a : M₁.World, forces ( combined_model M₁ M₂ w₁ w₂ ) ( some ( Sum.inl a ) ) _ ↔ forces M₁ a _› w' |>.2 ( h w' hw' );
+  · rename_i φ x ih;
+    by_cases hφ : IsComplexF φ;
+    · rw [ forces_val_of_complex, forces_val_of_complex ];
+      · rw [ ih ];
+      · assumption;
+      · assumption;
+    · cases φ <;> tauto
 
 /-
 Satisfaction is preserved when embedding into the right component.
@@ -192,279 +327,375 @@ Satisfaction is preserved when embedding into the right component.
 theorem forces_combined_right (M₁ M₂ : KripkeModel) (w₁ : M₁.World) (w₂ : M₂.World)
     (φ : Formula) (b : M₂.World) :
     forces (combined_model M₁ M₂ w₁ w₂) (some (.inr b)) φ ↔ forces M₂ b φ := by
-      induction' φ with _ _ _ _ ih1 ih2 generalizing b;
-      · exact Eq.to_iff rfl;
-      · simp_all +decide [ forces ];
-      · exact ⟨ fun h => ⟨ ih2 b |>.1 h.1, ‹∀ b, forces ( combined_model M₁ M₂ w₁ w₂ ) ( some ( Sum.inr b ) ) ih1 ↔ forces M₂ b ih1› b |>.1 h.2 ⟩, fun h => ⟨ ih2 b |>.2 h.1, ‹∀ b, forces ( combined_model M₁ M₂ w₁ w₂ ) ( some ( Sum.inr b ) ) ih1 ↔ forces M₂ b ih1› b |>.2 h.2 ⟩ ⟩;
-      · simp_all +decide [ forces ];
-        constructor <;> intro h w' hw';
-        · exact ‹∀ b : M₂.World, forces ( combined_model M₁ M₂ w₁ w₂ ) ( some ( Sum.inr b ) ) _ ↔ forces M₂ b _› w' |>.1 ( h _ <| by tauto );
-        · cases w' <;> simp_all +decide [ combined_model ];
-          cases ‹M₁.World ⊕ M₂.World› <;> simp_all +decide;
-      · rename_i h;
-        rename_i v;
-        cases v <;> simp_all +decide [ forces ]
+  induction' φ with p ih generalizing b;
+  · unfold forces; aesop;
+  · simp_all +decide [ forces ];
+  · simp_all +decide [ forces ];
+  · simp +decide [ forces, combined_model ];
+    constructor;
+    · intro h w' hw';
+      exact ‹∀ b : M₂.World, forces ( combined_model M₁ M₂ w₁ w₂ ) ( some ( Sum.inr b ) ) _ ↔ forces M₂ b _› w' |>.1 ( h _ hw' );
+    · intro h w' hw';
+      rcases w' with ( _ | ( _ | w' ) ) <;> simp +decide at hw' ⊢;
+      exact ‹∀ b : M₂.World, forces ( combined_model M₁ M₂ w₁ w₂ ) ( some ( Sum.inr b ) ) _ ↔ forces M₂ b _› w' |>.2 ( h w' hw' );
+  · rename_i φ x ih;
+    by_cases hφ : IsAtomF φ;
+    · cases φ <;> tauto;
+    · rw [ forces_val_of_complex, forces_val_of_complex ];
+      · rw [ ih ];
+      · exact hφ;
+      · exact hφ
 
-/-
-The combined model is reflexive if both components are.
--/
+/-- The combined model is reflexive if both components are. -/
 theorem combined_reflexive (M₁ M₂ : KripkeModel) (w₁ : M₁.World) (w₂ : M₂.World)
     (h₁ : IsReflexive M₁) (h₂ : IsReflexive M₂) :
     IsReflexive (combined_model M₁ M₂ w₁ w₂) := by
-      -- By definition of combined_model, for any world w, the relation R holds between w and itself.
-      intros w
-      cases w <;> simp [combined_model];
-      rename_i x; cases x <;> simp_all +decide [ IsReflexive ] ;
+  intro w
+  cases w with
+  | none => trivial
+  | some x => cases x <;> simp_all [combined_model, IsReflexive]
 
-/-
-The combined model is transitive if both components are.
--/
+/-- The combined model is transitive if both components are. -/
 theorem combined_transitive (M₁ M₂ : KripkeModel) (w₁ : M₁.World) (w₂ : M₂.World)
     (h₁ : IsTransitive M₁) (h₂ : IsTransitive M₂) :
     IsTransitive (combined_model M₁ M₂ w₁ w₂) := by
-      intro w w' w'' h1 h2;
-      rcases w with ( _ | ⟨ w₁ ⟩ ) <;> rcases w' with ( _ | ⟨ w₂ ⟩ ) <;> rcases w'' with ( _ | ⟨ w₃ ⟩ ) <;> simp_all +decide [ combined_model ];
-      cases w₁ <;> cases w₂ <;> cases w₃ <;> tauto
+  intro w w' w'' h1 h2
+  rcases w with (_ | ⟨u⟩) <;> rcases w' with (_ | ⟨v⟩) <;> rcases w'' with (_ | ⟨s⟩) <;>
+    simp_all +decide [combined_model]
+  cases u <;> cases v <;> cases s <;> tauto
 
-/-! ## Part 3: Refutability of Tⁿ(P) in Each Logic
+/-! ## Part 3: Refutability of Tⁿ(P) in each logic -/
 
-For K: a model with no accessible worlds refutes T_iter (n+1) because all boxes
-       hold vacuously, and T_iter 0 = atom 0 fails when V 0 w = False.
-
-For T/S4: a single reflexive world refutes T_iter (n+1) because at such a world
-          □(val φ t) reduces to forces w φ and □(val φ f) reduces to ¬forces w φ,
-          making their negations contradictory. -/
-
-/-- Single reflexive world model used for refutation in T and S4. -/
+/-- Single reflexive world, atom `0` valued `f`. -/
 def refutation_model : KripkeModel where
   World := Unit
   R _ _ := True
-  V _ _ := False
+  V _ _ := Val4.f
 
-theorem refutation_model_reflexive : IsReflexive refutation_model := by
-  tauto
+theorem refutation_model_reflexive : IsReflexive refutation_model := fun _ => trivial
 
-theorem refutation_model_transitive : IsTransitive refutation_model := by
-  exact fun _ _ _ _ _ => trivial
+theorem refutation_model_transitive : IsTransitive refutation_model :=
+  fun _ _ _ _ _ => trivial
 
-/-
-Tⁿ(P) is refutable in K for all n.
--/
+/-- In the single-world refutation model (every atom valued `f`), every formula
+    `Q` receives value `t` or value `f` at the world: complex `Q` is bivalent,
+    and an atom has value `f`.  This is what makes `T(Tⁿ(P))` refutable at a
+    reflexive world uniformly (including the atomic base case). -/
+lemma refutation_val_tf (Q : Formula) :
+    forces refutation_model () (.val Q .t) ∨ forces refutation_model () (.val Q .f) := by
+  cases Q with
+  | atom p => right; rfl
+  | not ψ =>
+    by_cases h : forces refutation_model () (.not ψ)
+    · exact Or.inl h
+    · exact Or.inr h
+  | and ψ χ =>
+    by_cases h : forces refutation_model () (.and ψ χ)
+    · exact Or.inl h
+    · exact Or.inr h
+  | box ψ =>
+    by_cases h : forces refutation_model () (.box ψ)
+    · exact Or.inl h
+    · exact Or.inr h
+  | val ψ y =>
+    by_cases h : forces refutation_model () (.val ψ y)
+    · exact Or.inl h
+    · exact Or.inr h
+
+/-- Tⁿ(P) is refutable in K for all n (dead-end model). -/
 theorem T_iter_refutable_K (n : ℕ) :
     ∃ (M : KripkeModel) (w : M.World), ¬ forces M w (T_iter n) := by
-      -- Define a model with World := Unit, R _ _ := False, V _ _ := False.
-      use { World := Unit, R _ _ := False, V _ _ := False };
-      induction' n with n ih;
-      · exact Unique.exists_iff.mpr fun a => a;
-      · simp +decide [ T_iter ];
-        -- Since the model has no accessible worlds, all boxes hold vacuously.
-        simp [target_formula, forces] at *
+  refine ⟨{ World := Unit, R := fun _ _ => False, V := fun _ _ => Val4.f }, (), ?_⟩
+  cases n with
+  | zero => show ¬ (Val4.f = Val4.t); simp
+  | succ m =>
+    show ¬ forces _ _ (target_formula (T_iter m))
+    simp only [target_formula, forces]
+    simp
 
-/-
-Tⁿ(P) is refutable in reflexive frames (T logic) for all n.
--/
+/-- Tⁿ(P) is refutable in reflexive frames (T) for all n. -/
 theorem T_iter_refutable_T (n : ℕ) :
     ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ ¬ forces M w (T_iter n) := by
-        induction' n with n ih;
-        · exists refutation_model, ⟨ ⟩;
-          exact ⟨ refutation_model_reflexive, by tauto ⟩;
-        · use refutation_model;
-          refine' ⟨ ⟨ ⟩, _, _ ⟩;
-          · exact refutation_model_reflexive;
-          · -- By definition of $T_iter$, we have $T_iter (n + 1) = target_formula (T_iter n)$.
-            simp [T_iter];
-            unfold target_formula; simp +decide [ forces ] ;
-            tauto
+  refine ⟨refutation_model, (), refutation_model_reflexive, ?_⟩
+  cases n with
+  | zero => show ¬ (Val4.f = Val4.t); simp
+  | succ m =>
+    intro hcon
+    obtain ⟨⟨h1, h2⟩, _⟩ := hcon
+    rcases refutation_val_tf (T_iter m) with h | h
+    · exact h1 (by intro w' _; cases w'; exact h)
+    · exact h2 (by intro w' _; cases w'; exact h)
 
-/-
-Tⁿ(P) is refutable in reflexive + transitive frames (S4 logic) for all n.
--/
+/-- Tⁿ(P) is refutable in reflexive + transitive frames (S4) for all n. -/
 theorem T_iter_refutable_S4 (n : ℕ) :
     ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ IsTransitive M ∧ ¬ forces M w (T_iter n) := by
-        induction' n with n ih;
-        · use refutation_model, ();
-          exact ⟨ refutation_model_reflexive, refutation_model_transitive, by tauto ⟩;
-        · refine' ⟨ refutation_model, ⟨ ⟩, _, _, _ ⟩;
-          · exact refutation_model_reflexive;
-          · exact refutation_model_transitive;
-          · -- By definition of $forces$, we have:
-            have h_forces : ¬forces refutation_model PUnit.unit (target_formula (T_iter n)) := by
-              unfold target_formula; simp +decide [ forces ] ;
-              tauto;
-            exact h_forces
+  refine ⟨refutation_model, (), refutation_model_reflexive,
+    refutation_model_transitive, ?_⟩
+  cases n with
+  | zero => show ¬ (Val4.f = Val4.t); simp
+  | succ m =>
+    intro hcon
+    obtain ⟨⟨h1, h2⟩, _⟩ := hcon
+    rcases refutation_val_tf (T_iter m) with h | h
+    · exact h1 (by intro w' _; cases w'; exact h)
+    · exact h2 (by intro w' _; cases w'; exact h)
 
-/-! ## Part 4: Key Inductive Step — T(φ) Satisfiability
+/-! ## Part 4: Key inductive step — T(φ) satisfiability for complex φ
 
-If φ is both satisfiable and refutable (in a given logic), then T(φ) is satisfiable
-in the same logic. The combined model provides a root world that sees witnesses for
-both satisfaction and refutation of φ. -/
+The generic "satisfiable + refutable ⟹ T(φ) satisfiable" step is only valid
+when `φ` is **complex**: only then does `¬ forces φ` yield `val φ f` and
+`forces φ` yield `¬ val φ t`, and only then are `val φ b`, `val φ n` uniformly
+`False` (so their box-negations follow from seriality of the root). -/
 
-/-
-Key step for K: if φ is satisfiable and refutable, T(φ) is satisfiable.
--/
-theorem target_satisfiable_K (φ : Formula)
+theorem target_satisfiable_K (φ : Formula) (hφ : IsComplexF φ)
     (hsat : ∃ (M : KripkeModel) (w : M.World), forces M w φ)
     (href : ∃ (M : KripkeModel) (w : M.World), ¬ forces M w φ) :
     ∃ (M : KripkeModel) (w : M.World), forces M w (target_formula φ) := by
-      obtain ⟨ M₁, w₁, h₁ ⟩ := hsat
-      obtain ⟨ M₂, w₂, h₂ ⟩ := href
-      use combined_model M₁ M₂ w₁ w₂, none;
-      unfold target_formula;
-      simp +decide [ forces ];
-      exact ⟨ ⟨ ⟨ some ( Sum.inr w₂ ), by tauto, by rw [ forces_combined_right ] ; tauto ⟩, ⟨ some ( Sum.inl w₁ ), by tauto, by rw [ forces_combined_left ] ; tauto ⟩ ⟩, ⟨ some ( Sum.inl w₁ ), by tauto ⟩ ⟩
+  obtain ⟨M₁, w₁, h₁⟩ := hsat
+  obtain ⟨M₂, w₂, h₂⟩ := href
+  refine ⟨combined_model M₁ M₂ w₁ w₂, none, ⟨?_, ?_⟩, ⟨?_, ?_⟩⟩
+  · intro h
+    have hh := h (some (.inr w₂)) trivial
+    rw [forces_val_t_complex _ _ φ hφ, forces_combined_right] at hh
+    exact h₂ hh
+  · intro h
+    have hh := h (some (.inl w₁)) trivial
+    rw [forces_val_f_complex _ _ φ hφ, forces_combined_left] at hh
+    exact hh h₁
+  · intro h
+    have hh := h none trivial
+    rw [forces_val_b_complex _ _ φ hφ] at hh
+    exact hh
+  · intro h
+    have hh := h none trivial
+    rw [forces_val_n_complex _ _ φ hφ] at hh
+    exact hh
 
-/-
-Key step for T: if φ is satisfiable and refutable in reflexive models,
-    T(φ) is satisfiable in a reflexive model.
--/
-theorem target_satisfiable_T (φ : Formula)
+theorem target_satisfiable_T (φ : Formula) (hφ : IsComplexF φ)
     (hsat : ∃ (M : KripkeModel) (w : M.World), IsReflexive M ∧ forces M w φ)
     (href : ∃ (M : KripkeModel) (w : M.World), IsReflexive M ∧ ¬ forces M w φ) :
     ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ forces M w (target_formula φ) := by
-        obtain ⟨M₁, w₁, h₁⟩ := hsat
-        obtain ⟨M₂, w₂, h₂⟩ := href;
-        use combined_model M₁ M₂ w₁ w₂;
-        refine' ⟨ none, _, _ ⟩;
-        · exact combined_reflexive M₁ M₂ w₁ w₂ h₁.1 h₂.1;
-        · unfold target_formula;
-          simp_all +decide [ IsReflexive, forces ];
-          exact ⟨ ⟨ ⟨ some ( Sum.inr w₂ ), by tauto, by erw [ forces_combined_right ] ; tauto ⟩, ⟨ some ( Sum.inl w₁ ), by tauto, by erw [ forces_combined_left ] ; tauto ⟩ ⟩, ⟨ some ( Sum.inl w₁ ), by tauto ⟩ ⟩
+  obtain ⟨M₁, w₁, hr₁, h₁⟩ := hsat
+  obtain ⟨M₂, w₂, hr₂, h₂⟩ := href
+  refine ⟨combined_model M₁ M₂ w₁ w₂, none,
+    combined_reflexive M₁ M₂ w₁ w₂ hr₁ hr₂, ⟨?_, ?_⟩, ⟨?_, ?_⟩⟩
+  · intro h
+    have hh := h (some (.inr w₂)) trivial
+    rw [forces_val_t_complex _ _ φ hφ, forces_combined_right] at hh
+    exact h₂ hh
+  · intro h
+    have hh := h (some (.inl w₁)) trivial
+    rw [forces_val_f_complex _ _ φ hφ, forces_combined_left] at hh
+    exact hh h₁
+  · intro h
+    have hh := h none trivial
+    rw [forces_val_b_complex _ _ φ hφ] at hh
+    exact hh
+  · intro h
+    have hh := h none trivial
+    rw [forces_val_n_complex _ _ φ hφ] at hh
+    exact hh
 
-/-
-Key step for S4: if φ is satisfiable and refutable in reflexive + transitive
-    models, T(φ) is satisfiable in such a model.
--/
-theorem target_satisfiable_S4 (φ : Formula)
+theorem target_satisfiable_S4 (φ : Formula) (hφ : IsComplexF φ)
     (hsat : ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ IsTransitive M ∧ forces M w φ)
     (href : ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ IsTransitive M ∧ ¬ forces M w φ) :
     ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ IsTransitive M ∧ forces M w (target_formula φ) := by
-        -- Extract M₁, w₁ with IsReflexive M₁, IsTransitive M₁, forces M₁ w₁ φ from hsat.
-        obtain ⟨M₁, w₁, hsat⟩ : ∃ M₁ w₁, IsReflexive M₁ ∧ IsTransitive M₁ ∧ forces M₁ w₁ φ := hsat;
-        -- Extract M₂, w₂ with IsReflexive M₂, IsTransitive M₂, ¬forces M₂ w₂ φ from href.
-        obtain ⟨M₂, w₂, href⟩ : ∃ M₂ w₂, IsReflexive M₂ ∧ IsTransitive M₂ ∧ ¬forces M₂ w₂ φ := href;
-        refine' ⟨ combined_model M₁ M₂ w₁ w₂, none, _, _, _ ⟩;
-        · exact combined_reflexive M₁ M₂ w₁ w₂ hsat.1 href.1;
-        · exact combined_transitive M₁ M₂ w₁ w₂ hsat.2.1 href.2.1;
-        · -- Show that the combined model satisfies the target formula at the root.
-          simp [target_formula, forces];
-          exact ⟨ ⟨ ⟨ some ( .inr w₂ ), by tauto, by rw [ forces_combined_right ] ; tauto ⟩, ⟨ some ( .inl w₁ ), by tauto, by rw [ forces_combined_left ] ; tauto ⟩ ⟩, ⟨ none, by tauto ⟩ ⟩
+  obtain ⟨M₁, w₁, hr₁, ht₁, h₁⟩ := hsat
+  obtain ⟨M₂, w₂, hr₂, ht₂, h₂⟩ := href
+  refine ⟨combined_model M₁ M₂ w₁ w₂, none,
+    combined_reflexive M₁ M₂ w₁ w₂ hr₁ hr₂,
+    combined_transitive M₁ M₂ w₁ w₂ ht₁ ht₂, ⟨?_, ?_⟩, ⟨?_, ?_⟩⟩
+  · intro h
+    have hh := h (some (.inr w₂)) trivial
+    rw [forces_val_t_complex _ _ φ hφ, forces_combined_right] at hh
+    exact h₂ hh
+  · intro h
+    have hh := h (some (.inl w₁)) trivial
+    rw [forces_val_f_complex _ _ φ hφ, forces_combined_left] at hh
+    exact hh h₁
+  · intro h
+    have hh := h none trivial
+    rw [forces_val_b_complex _ _ φ hφ] at hh
+    exact hh
+  · intro h
+    have hh := h none trivial
+    rw [forces_val_n_complex _ _ φ hφ] at hh
+    exact hh
 
-/-! ## Part 5: n-fold Tⁿ(P) Satisfiability in K, T, and S4 -/
+/-! ## Part 5: n-fold Tⁿ(P) satisfiability in K, T, S4
 
-/-- For all n, Tⁿ(P) is satisfiable in K. -/
+The induction needs a **separate atomic base case**: `T_iter 0 = atom 0` is
+atomic, so `¬ forces (atom 0)` does *not* give it value `f` (it could be `b` or
+`n`).  Hence `T_iter 1 = T(atom 0)` is proved directly with the genuinely
+four-valued two-world model, and the combined-model step is used only from
+`T_iter 2` onwards, where the argument of `T` is already complex. -/
+
 theorem T_iter_satisfiable_K : ∀ n : ℕ,
-    ∃ (M : KripkeModel) (w : M.World), forces M w (T_iter n) := by
-  intro n; induction n with
-  | zero => exact ⟨⟨Unit, fun _ _ => False, fun _ _ => True⟩, (), trivial⟩
-  | succ n ih => exact target_satisfiable_K _ ih (T_iter_refutable_K n)
+    ∃ (M : KripkeModel) (w : M.World), forces M w (T_iter n)
+  | 0 => ⟨⟨Unit, fun _ _ => False, fun _ _ => Val4.t⟩, (), rfl⟩
+  | 1 => ⟨TP_model, true, TP_satisfiable⟩
+  | (m + 2) =>
+      target_satisfiable_K (T_iter (m + 1)) (T_iter_succ_complex m)
+        (T_iter_satisfiable_K (m + 1)) (T_iter_refutable_K (m + 1))
 
-/-- For all n, Tⁿ(P) is satisfiable in T (reflexive frames). -/
 theorem T_iter_satisfiable_T : ∀ n : ℕ,
-    ∃ (M : KripkeModel) (w : M.World),
-      IsReflexive M ∧ forces M w (T_iter n) := by
-  intro n; induction n with
-  | zero =>
-    exact ⟨⟨Unit, fun _ _ => True, fun _ _ => True⟩, (),
-           fun _ => trivial, trivial⟩
-  | succ n ih => exact target_satisfiable_T _ ih (T_iter_refutable_T n)
+    ∃ (M : KripkeModel) (w : M.World), IsReflexive M ∧ forces M w (T_iter n)
+  | 0 => ⟨⟨Unit, fun _ _ => True, fun _ _ => Val4.t⟩, (), fun _ => trivial, rfl⟩
+  | 1 => ⟨TP_model, true, TP_model_isS5.1, TP_satisfiable⟩
+  | (m + 2) =>
+      target_satisfiable_T (T_iter (m + 1)) (T_iter_succ_complex m)
+        (T_iter_satisfiable_T (m + 1)) (T_iter_refutable_T (m + 1))
 
-/-- For all n, Tⁿ(P) is satisfiable in S4 (reflexive + transitive frames). -/
 theorem T_iter_satisfiable_S4 : ∀ n : ℕ,
     ∃ (M : KripkeModel) (w : M.World),
-      IsReflexive M ∧ IsTransitive M ∧ forces M w (T_iter n) := by
-  intro n; induction n with
-  | zero =>
-    exact ⟨⟨Unit, fun _ _ => True, fun _ _ => True⟩, (),
-           fun _ => trivial, fun _ _ _ _ _ => trivial, trivial⟩
-  | succ n ih => exact target_satisfiable_S4 _ ih (T_iter_refutable_S4 n)
+      IsReflexive M ∧ IsTransitive M ∧ forces M w (T_iter n)
+  | 0 => ⟨⟨Unit, fun _ _ => True, fun _ _ => Val4.t⟩, (),
+          fun _ => trivial, fun _ _ _ _ _ => trivial, rfl⟩
+  | 1 => ⟨TP_model, true, TP_model_isS5.1, TP_model_isS5.2.2, TP_satisfiable⟩
+  | (m + 2) =>
+      target_satisfiable_S4 (T_iter (m + 1)) (T_iter_succ_complex m)
+        (T_iter_satisfiable_S4 (m + 1)) (T_iter_refutable_S4 (m + 1))
 
-/-! ## Part 6: T(T(P)) Satisfiability — Corollaries
+/-! ## Part 6: T(T(P)) satisfiability corollaries -/
 
-T(T(P)) = T²(P) = T_iter 2, so these follow directly from the n-fold results. -/
-
-/-- T(T(P)) is satisfiable in K. -/
 theorem TTP_satisfiable_K :
     ∃ (M : KripkeModel) (w : M.World),
       forces M w (target_formula (target_formula (.atom 0))) :=
   T_iter_satisfiable_K 2
 
-/-- T(T(P)) is satisfiable in T. -/
 theorem TTP_satisfiable_T :
     ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ forces M w (target_formula (target_formula (.atom 0))) :=
   T_iter_satisfiable_T 2
 
-/-- T(T(P)) is satisfiable in S4. -/
 theorem TTP_satisfiable_S4 :
     ∃ (M : KripkeModel) (w : M.World),
       IsReflexive M ∧ IsTransitive M ∧
         forces M w (target_formula (target_formula (.atom 0))) :=
   T_iter_satisfiable_S4 2
 
-/-! ## Part 7: T(T(P)) Unsatisfiability in S5
+/-! ## Part 7: T(T(P)) unsatisfiability in S5 (class-constancy)
 
-In S5, the accessibility relation is an equivalence relation. This means that
-□φ is invariant within equivalence classes: if w accesses w', then □φ holds at w
-iff it holds at w'. Consequently, target_formula P is class-constant: it either
-holds at all worlds in an equivalence class or at none.
+The argument only uses that boxed formulas are constant within an S5
+equivalence class; it is independent of whether atoms are Boolean or
+four-valued. -/
 
-This makes T(T(P)) = target_formula(target_formula P) unsatisfiable:
-to satisfy it, we would need an accessible world where T(P) holds AND one
-where it fails — but class-constancy prevents this within a single class. -/
-
-/-
-In S5, □φ is invariant within equivalence classes.
--/
+/-- In S5, `□φ` is invariant within an equivalence class. -/
 lemma s5_box_invariant (M : KripkeModel) (hS5 : IsS5 M)
     (w w' : M.World) (hR : M.R w w') (φ : Formula) :
     forces M w (.box φ) ↔ forces M w' (.box φ) := by
-      constructor <;> intro h;
-      · intro w'' hR'';
-        exact h w'' ( hS5.2.2 _ _ _ hR hR'' );
-      · intro w'' hw'';
-        -- By transitivity of S5, we have R w' w''.
-        have h_trans : M.R w' w'' := by
-          exact hS5.2.2 _ _ _ ( hS5.2.1 _ _ hR ) hw'';
-        exact h _ h_trans
+  constructor <;> intro h
+  · intro w'' hR''
+    exact h w'' (hS5.2.2 _ _ _ hR hR'')
+  · intro w'' hR''
+    exact h w'' (hS5.2.2 _ _ _ (hS5.2.1 _ _ hR) hR'')
 
-/-
-In S5, target_formula P is invariant within equivalence classes.
--/
+/-- In S5, `target_formula P` is invariant within an equivalence class. -/
 lemma target_formula_invariant (M : KripkeModel) (hS5 : IsS5 M)
     (w w' : M.World) (hR : M.R w w') (P : Formula) :
     forces M w (target_formula P) ↔ forces M w' (target_formula P) := by
-      unfold target_formula; simp +decide [ *, forces ] ;
-      constructor;
-      · rintro ⟨ ⟨ ⟨ x, hx₁, hx₂ ⟩, ⟨ y, hy₁, hy₂ ⟩ ⟩, z, hz ⟩;
-        refine' ⟨ ⟨ ⟨ x, _, _ ⟩, ⟨ y, _, _ ⟩ ⟩, ⟨ x, _ ⟩ ⟩;
-        · exact hS5.2.1 _ _ hR |> fun h => hS5.2.2 _ _ _ h hx₁;
-        · assumption;
-        · exact hS5.2.1 _ _ hR |> fun h => hS5.2.2 _ _ _ h hy₁;
-        · assumption;
-        · exact hS5.2.1 _ _ hR |> fun h => hS5.2.2 _ _ _ h hx₁;
-      · rintro ⟨ ⟨ ⟨ x, hx₁, hx₂ ⟩, ⟨ y, hy₁, hy₂ ⟩ ⟩, z, hz ⟩;
-        exact ⟨ ⟨ ⟨ x, hS5.2.2 _ _ _ hR hx₁, hx₂ ⟩, ⟨ y, hS5.2.2 _ _ _ hR hy₁, hy₂ ⟩ ⟩, ⟨ z, hS5.2.2 _ _ _ hR hz ⟩ ⟩
+  have hA := s5_box_invariant M hS5 w w' hR (.val P .t)
+  have hB := s5_box_invariant M hS5 w w' hR (.val P .f)
+  have hC := s5_box_invariant M hS5 w w' hR (.val P .b)
+  have hD := s5_box_invariant M hS5 w w' hR (.val P .n)
+  show (¬ forces M w (.box (.val P .t)) ∧ ¬ forces M w (.box (.val P .f))) ∧
+       (¬ forces M w (.box (.val P .b)) ∧ ¬ forces M w (.box (.val P .n))) ↔
+       (¬ forces M w' (.box (.val P .t)) ∧ ¬ forces M w' (.box (.val P .f))) ∧
+       (¬ forces M w' (.box (.val P .b)) ∧ ¬ forces M w' (.box (.val P .n)))
+  rw [hA, hB, hC, hD]
 
-/-
-**Main unsatisfiability theorem**: T(T(P)) is unsatisfiable in S5.
-    No S5 model can satisfy target_formula(target_formula P) at any world.
--/
+/-- **D.** T(T(P)) is unsatisfiable in S5. -/
 theorem TTP_unsatisfiable_S5 (M : KripkeModel) (hS5 : IsS5 M)
     (w : M.World) (P : Formula) :
     ¬ forces M w (target_formula (target_formula P)) := by
-      have := hS5.1 w;
-      contrapose! this;
-      obtain ⟨w₁, hw₁⟩ : ∃ w₁, M.R w w₁ ∧ ¬forces M w₁ (target_formula P) := by
-        have := this.1.1;
-        exact Set.not_subset.mp this
-      obtain ⟨w₂, hw₂⟩ : ∃ w₂, M.R w w₂ ∧ forces M w₂ (target_formula P) := by
-        grind +locals;
-      have := target_formula_invariant M hS5 w₁ w₂ ( hS5.2.1 _ _ hw₁.1 |> fun h => hS5.2.2 _ _ _ h hw₂.1 ) P; aesop;
+  intro hcon
+  obtain ⟨⟨hnt, hnf⟩, _⟩ := hcon
+  have hcx := target_formula_complex P
+  -- `hnt` gives an accessible world where `T(P)` FAILS
+  have h1 : ∃ w₁, M.R w w₁ ∧ ¬ forces M w₁ (target_formula P) := by
+    by_contra hc
+    push_neg at hc
+    apply hnt
+    intro w₁ hw₁
+    rw [forces_val_t_complex _ _ _ hcx]
+    exact hc w₁ hw₁
+  -- `hnf` gives an accessible world where `T(P)` HOLDS
+  have h2 : ∃ w₂, M.R w w₂ ∧ forces M w₂ (target_formula P) := by
+    by_contra hc
+    push_neg at hc
+    apply hnf
+    intro w₂ hw₂
+    rw [forces_val_f_complex _ _ _ hcx]
+    exact hc w₂ hw₂
+  obtain ⟨w₁, hRw₁, hf₁⟩ := h1
+  obtain ⟨w₂, hRw₂, hf₂⟩ := h2
+  -- `w₁` and `w₂` lie in the same S5 class, so `T(P)` is constant across them
+  have hR12 : M.R w₁ w₂ := hS5.2.2 _ _ _ (hS5.2.1 _ _ hRw₁) hRw₂
+  exact hf₁ ((target_formula_invariant M hS5 w₁ w₂ hR12 P).2 hf₂)
+
+/-! ## Part E: Higher-level reduction
+
+For complex `φ` at a world with an accessible successor, the `b` and `n`
+conjuncts of `T(φ)` are automatically satisfied, because complex formulas
+receive only `t` or `f` (so `val φ b`, `val φ n` are `False` everywhere).
+Hence `T(T(P))` reduces to classical modal contingency of `T(P)`. -/
+
+/-- **E.** For complex `φ` and a serial root, the `b`/`n` box-negations hold. -/
+lemma target_complex_bn (M : KripkeModel) (w : M.World) (φ : Formula)
+    (hφ : IsComplexF φ) (hser : ∃ w', M.R w w') :
+    ¬ forces M w (.box (.val φ .b)) ∧ ¬ forces M w (.box (.val φ .n)) := by
+  obtain ⟨w', hw'⟩ := hser
+  refine ⟨?_, ?_⟩
+  · intro h
+    have := h w' hw'
+    rw [forces_val_b_complex _ _ φ hφ] at this
+    exact this
+  · intro h
+    have := h w' hw'
+    rw [forces_val_n_complex _ _ φ hφ] at this
+    exact this
+
+/-- **E.** Reduction of `T(T(P))` to classical modal contingency of `T(P)`
+    (`¬□T(P) ∧ ¬□¬T(P)`), given a serial root. -/
+lemma TTP_reduction (M : KripkeModel) (w : M.World) (P : Formula)
+    (hser : ∃ w', M.R w w') :
+    forces M w (target_formula (target_formula P)) ↔
+      ((¬ ∀ w', M.R w w' → forces M w' (target_formula P)) ∧
+       (¬ ∀ w', M.R w w' → ¬ forces M w' (target_formula P))) := by
+  have hcx := target_formula_complex P
+  constructor
+  · intro h
+    obtain ⟨⟨hnt, hnf⟩, _⟩ := h
+    refine ⟨?_, ?_⟩
+    · intro hall
+      apply hnt
+      intro w' hw'
+      rw [forces_val_t_complex _ _ _ hcx]
+      exact hall w' hw'
+    · intro hall
+      apply hnf
+      intro w' hw'
+      rw [forces_val_f_complex _ _ _ hcx]
+      exact hall w' hw'
+  · intro ⟨hnt, hnf⟩
+    refine ⟨⟨?_, ?_⟩, target_complex_bn M w (target_formula P) hcx hser⟩
+    · intro hall
+      apply hnt
+      intro w' hw'
+      have := hall w' hw'
+      rw [forces_val_t_complex _ _ _ hcx] at this
+      exact this
+    · intro hall
+      apply hnf
+      intro w' hw'
+      have := hall w' hw'
+      rw [forces_val_f_complex _ _ _ hcx] at this
+      exact this
 
 end
